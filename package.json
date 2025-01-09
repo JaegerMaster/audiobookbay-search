@@ -1,0 +1,23 @@
+{
+  "name": "audiobookbay-search",
+  "version": "1.0.0",
+  "description": "Command-line tool to search audiobookbay and get magnet links",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "audiobook",
+    "search",
+    "cli",
+    "magnet",
+    "torrent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.5",
+    "cheerio": "^1.0.0-rc.12"
+  }
+}
