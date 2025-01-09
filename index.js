@@ -1,6 +1,23 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { createInterface } from 'readline';
+import ncp from 'copy-paste';
+import chalk from 'chalk';
+
+// Color theme
+const theme = {
+    border: chalk.cyan,
+    header: chalk.bold.yellow,
+    title: chalk.white,
+    size: chalk.green,
+    index: chalk.cyan,
+    prompt: chalk.bold.magenta,
+    option: chalk.yellow,
+    success: chalk.green,
+    error: chalk.red,
+    info: chalk.blue,
+    pageNum: chalk.gray
+};
 
 const BASE_URL = 'https://audiobookbay.lu';
 
@@ -13,10 +30,46 @@ const rl = createInterface({
 // Promise wrapper for readline question
 const question = (query) => new Promise((resolve) => rl.question(query, resolve));
 
+// Function to create a formatted table row
+function createTableRow(cols, widths) {
+    return theme.border('│ ') + cols.map((col, i) => col.toString().padEnd(widths[i])).join(theme.border(' │ ')) + theme.border(' │');
+}
+
+// Function to create table separator
+function createTableSeparator(widths) {
+    return theme.border('├─' + widths.map(w => '─'.repeat(w)).join('─┼─') + '─┤');
+}
+
+// Function to display results in a table
+function displayResultsTable(results) {
+    const widths = [3, 85, 10];  // Widths for #, Title, and Size
+    const headers = ['#', 'Title', 'Size'];
+    
+    // Create top border
+    console.log(theme.border('┌─' + widths.map(w => '─'.repeat(w)).join('─┬─') + '─┐'));
+    
+    // Create headers
+    console.log(createTableRow(headers.map(h => theme.header(h)), widths));
+    console.log(createTableSeparator(widths));
+    
+    // Create rows
+    results.forEach((book, index) => {
+        const row = [
+            theme.index(index + 1),
+            theme.title(book.title),
+            theme.size(book.size)
+        ];
+        console.log(createTableRow(row, widths));
+    });
+    
+    // Create bottom border
+    console.log(theme.border('└─' + widths.map(w => '─'.repeat(w)).join('─┴─') + '─┘'));
+}
+
 // Function to convert hash to magnet URL
 function createMagnetUrl(hash, title) {
     if (!hash) return null;
-    console.log('Creating magnet URL for hash:', hash);
+    // Remove debug message for cleaner output
     const encodedTitle = encodeURIComponent(title);
     const trackers = [
         'udp://tracker.coppersurfer.tk:6969/announce',
@@ -25,65 +78,59 @@ function createMagnetUrl(hash, title) {
         'udp://exodus.desync.com:6969/announce',
         'udp://tracker.torrent.eu.org:451/announce'
     ].map(tracker => `&tr=${encodeURIComponent(tracker)}`).join('');
-    
+
     return `magnet:?xt=urn:btih:${hash}&dn=${encodedTitle}${trackers}`;
 }
 
-async function searchAudiobooks(query) {
+async function searchAudiobooks(query, page = 1) {
     try {
-        // Format the search URL exactly as specified
-        const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(query.toLowerCase())}&cat=undefined%2Cundefined`;
-        console.log(`Searching URL: ${searchUrl}`);
+        // Handle mixed quoted and unquoted search terms
+        const searchTerms = query.match(/"[^"]+"|[^"\s]+/g) || [];
+        const processedTerms = searchTerms.map(term => 
+            term.startsWith('"') ? term : `"${term}"`
+        ).join(' ');
         
+        const searchUrl = `${BASE_URL}/page/${page}/?s=${encodeURIComponent(processedTerms)}&cat=undefined%2Cundefined`;
+        console.log(`\nSearching URL: ${searchUrl}\n`);
+
         const response = await axios.get(searchUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             }
         });
 
         const $ = cheerio.load(response.data);
         const results = [];
         
-        // Check if we're on a search results page
-        const searchTitle = $('h1:contains("Search Results")').length > 0;
-        console.log('Is search results page:', searchTitle);
-        
-        // Using the content div as main container
         $('#content .post, #content article.post').each((i, element) => {
             const $post = $(element);
             const titleElement = $post.find('.postTitle h2 a');
             const title = titleElement.text().trim();
             const url = titleElement.attr('href');
             const postContent = $post.find('.postContent').text();
-            
-            // Extract info using regex
+
             const details = {
-                language: (postContent.match(/Language:\s*([^\n]+)/) || [])[1],
-                category: (postContent.match(/Category:\s*([^\n]+)/) || [])[1],
-                format: (postContent.match(/Format:\s*([^\n]+)/) || [])[1],
                 size: (postContent.match(/Size:\s*([^\n]+)/) || [])[1]
             };
 
             if (title && url) {
-                // Ensure URL is complete
                 const fullUrl = url.startsWith('http') ? url : `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
                 results.push({
                     title,
                     url: fullUrl,
-                    language: details.language?.trim() || 'Unknown',
-                    category: details.category?.trim() || 'Unknown',
-                    format: details.format?.trim() || 'Unknown',
                     size: details.size?.trim() || 'Unknown'
                 });
             }
         });
 
-        return results;
+        // Check if there's a next page
+        const hasNextPage = $('#pagination a:contains("»")').length > 0;
+
+        return { results, hasNextPage };
     } catch (error) {
         console.error('Search error:', error.message);
-        return [];
+        return { results: [], hasNextPage: false };
     }
 }
 
@@ -99,14 +146,17 @@ async function getAudiobookDetails(url) {
         const title = $('.postTitle h1').text().trim();
         const postContent = $('.postContent').text();
         
-        console.log('Debug: Checking magnet hash element');
-        const magnetElement = $('#magnetLink');
-        console.log('Magnet element found:', magnetElement.length > 0);
-        let magnetHash = magnetElement.length > 0 ? magnetElement.text().trim() : '';
+        // Try to find magnet hash using various methods
+        let magnetHash = '';
         
-        // If we couldn't find the hash in the magnetLink element, try alternative methods
+        // First try the #magnetLink element
+        const magnetElement = $('#magnetLink');
+        if (magnetElement.length > 0) {
+            magnetHash = magnetElement.text().trim();
+        }
+        
+        // If not found, look for hash pattern in any element
         if (!magnetHash) {
-            // Look for any element containing text that looks like a hash
             $('*').each((_, el) => {
                 const text = $(el).text().trim();
                 if (text.match(/^[a-fA-F0-9]{40}$/)) {
@@ -115,22 +165,9 @@ async function getAudiobookDetails(url) {
                 }
             });
         }
-        console.log('Magnet hash:', magnetHash);
         
-        // Extract book details
-        const details = {
-            author: (postContent.match(/Author:\s*([^\n]+)/) || [])[1],
-            narrator: (postContent.match(/Read by:\s*([^\n]+)/) || [])[1],
-            format: (postContent.match(/Format:\s*([^\n]+)/) || [])[1],
-            bitrate: (postContent.match(/Bitrate:\s*([^\n]+)/) || [])[1]
-        };
-
         return {
-            title: title || 'Unknown Title',
-            author: details.author?.trim() || 'Unknown',
-            narrator: details.narrator?.trim() || 'Unknown',
-            format: details.format?.trim() || 'Unknown',
-            bitrate: details.bitrate?.trim() || 'Unknown',
+            title,
             magnetUrl: magnetHash ? createMagnetUrl(magnetHash, title) : null
         };
     } catch (error) {
@@ -141,60 +178,93 @@ async function getAudiobookDetails(url) {
 
 async function main() {
     try {
-        const query = await question('Enter search term: ');
-        console.log('\nSearching for audiobooks...\n');
+        let currentPage = 1;
+        let keepSearching = true;
+        const query = await question(theme.prompt('Enter search term: '));
         
-        const results = await searchAudiobooks(query);
-        
-        if (results.length === 0) {
-            console.log('No results found. Please try a different search term.');
-            return;
+        while (keepSearching) {
+            console.log(theme.info('\nSearching for audiobooks...\n'));
+            const { results, hasNextPage } = await searchAudiobooks(query, currentPage);
+
+            if (results.length === 0) {
+                console.log('No results found. Please try a different search term.');
+                break;
+            }
+
+            console.log(theme.info(`\nPage ${currentPage}`));
+            displayResultsTable(results);
+            
+            const options = [
+                theme.option('0. Exit'), 
+                theme.option('1-N. Select audiobook')
+            ];
+            if (hasNextPage) options.push(theme.option('n. Next page'));
+            if (currentPage > 1) options.push(theme.option('p. Previous page'));
+            
+            console.log('\nOptions:', options.join(', '));
+            const choice = await question(theme.prompt('\nEnter your choice: '));
+
+            if (choice.toLowerCase() === 'n' && hasNextPage) {
+                currentPage++;
+                continue;
+            } else if (choice.toLowerCase() === 'p' && currentPage > 1) {
+                currentPage--;
+                continue;
+            } else if (choice === '0') {
+                break;
+            }
+
+            const choiceNum = parseInt(choice);
+            if (isNaN(choiceNum) || choiceNum < 1 || choiceNum > results.length) {
+                console.log('Invalid choice. Please try again.');
+                continue;
+            }
+
+            const selectedBook = results[choiceNum - 1];
+            console.log('\nFetching audiobook details...\n');
+
+            const bookDetails = await getAudiobookDetails(selectedBook.url);
+            if (!bookDetails) {
+                console.log('Unable to fetch audiobook details. Please try again later.');
+                const retry = await question('\nWould you like to try another book? (y/n): ');
+                if (retry.toLowerCase() !== 'y') break;
+                continue;
+            }
+
+            if (bookDetails.magnetUrl) {
+                console.log(theme.info('\nMagnet Link for:'), theme.title(bookDetails.title));
+                console.log(theme.border('─'.repeat(50)));
+                console.log(theme.info(bookDetails.magnetUrl));
+                
+                // Copy to clipboard
+                try {
+                    ncp.copy(bookDetails.magnetUrl, function () {
+                        console.log(theme.success('\n✓ Magnet link copied to clipboard!'));
+                    });
+                } catch (err) {
+                    console.log(theme.error('\nNote: To copy the magnet link, please select and copy it manually.'));
+                }
+
+                if (hasNextPage) {
+                    console.log(theme.info('\nThere are more results available on the next page.'));
+                }
+
+                const nextAction = await question(theme.prompt('\nOptions: n (next page), s (search again), any other key to exit: '));
+                if (nextAction.toLowerCase() === 'n' && hasNextPage) {
+                    currentPage++;
+                    continue;
+                } else if (nextAction.toLowerCase() === 's') {
+                    return main(); // Start a new search
+                } else {
+                    break;
+                }
+            } else {
+                console.log('\nNo magnet link available for this audiobook.');
+                const retry = await question('\nWould you like to try another book? (y/n): ');
+                if (retry.toLowerCase() !== 'y') break;
+                continue;
+            }
         }
-        
-        // Display results
-        results.forEach((book, index) => {
-            console.log(`${index + 1}. ${book.title}`);
-            console.log(`   Language: ${book.language}`);
-            console.log(`   Category: ${book.category}`);
-            console.log(`   Format: ${book.format}`);
-            console.log(`   Size: ${book.size}`);
-            console.log('');
-        });
-        
-        const choice = await question('Enter the number of the audiobook you want (or 0 to exit): ');
-        const choiceNum = parseInt(choice);
-        
-        if (choiceNum === 0 || isNaN(choiceNum) || choiceNum > results.length) {
-            console.log('Exiting...');
-            return;
-        }
-        
-        const selectedBook = results[choiceNum - 1];
-        console.log('\nFetching audiobook details...\n');
-        
-        const bookDetails = await getAudiobookDetails(selectedBook.url);
-        
-        if (!bookDetails) {
-            console.log('Unable to fetch audiobook details. Please try again later.');
-            return;
-        }
-        
-        // Display results
-        console.log('\nAudiobook Details:');
-        console.log('-------------------');
-        console.log('Title:', bookDetails.title);
-        console.log('Author:', bookDetails.author);
-        console.log('Narrator:', bookDetails.narrator);
-        console.log('Format:', bookDetails.format);
-        console.log('Bitrate:', bookDetails.bitrate);
-        
-        if (bookDetails.magnetUrl) {
-            console.log('\nMagnet Link:');
-            console.log(bookDetails.magnetUrl);
-        } else {
-            console.log('\nNo magnet link available for this audiobook.');
-        }
-        
     } catch (error) {
         console.error('An error occurred:', error.message);
     } finally {
