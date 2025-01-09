@@ -4,7 +4,7 @@ import { createInterface } from 'readline';
 import ncp from 'copy-paste';
 import chalk from 'chalk';
 
-// Color theme
+// Color theme remains unchanged
 const theme = {
     border: chalk.cyan,
     header: chalk.bold.yellow,
@@ -21,38 +21,30 @@ const theme = {
 
 const BASE_URL = 'https://audiobookbay.lu';
 
-// Create readline interface for user input
 const rl = createInterface({
     input: process.stdin,
     output: process.stdout
 });
 
-// Promise wrapper for readline question
 const question = (query) => new Promise((resolve) => rl.question(query, resolve));
 
-// Function to create a formatted table row
+// Table functions remain unchanged
 function createTableRow(cols, widths) {
     return theme.border('│ ') + cols.map((col, i) => col.toString().padEnd(widths[i])).join(theme.border(' │ ')) + theme.border(' │');
 }
 
-// Function to create table separator
 function createTableSeparator(widths) {
     return theme.border('├─' + widths.map(w => '─'.repeat(w)).join('─┼─') + '─┤');
 }
 
-// Function to display results in a table
 function displayResultsTable(results) {
-    const widths = [3, 85, 10];  // Widths for #, Title, and Size
+    const widths = [3, 85, 10];
     const headers = ['#', 'Title', 'Size'];
     
-    // Create top border
     console.log(theme.border('┌─' + widths.map(w => '─'.repeat(w)).join('─┬─') + '─┐'));
-    
-    // Create headers
     console.log(createTableRow(headers.map(h => theme.header(h)), widths));
     console.log(createTableSeparator(widths));
     
-    // Create rows
     results.forEach((book, index) => {
         const row = [
             theme.index(index + 1),
@@ -62,14 +54,11 @@ function displayResultsTable(results) {
         console.log(createTableRow(row, widths));
     });
     
-    // Create bottom border
     console.log(theme.border('└─' + widths.map(w => '─'.repeat(w)).join('─┴─') + '─┘'));
 }
 
-// Function to convert hash to magnet URL
 function createMagnetUrl(hash, title) {
     if (!hash) return null;
-    // Remove debug message for cleaner output
     const encodedTitle = encodeURIComponent(title);
     const trackers = [
         'udp://tracker.coppersurfer.tk:6969/announce',
@@ -84,7 +73,6 @@ function createMagnetUrl(hash, title) {
 
 async function searchAudiobooks(query, page = 1) {
     try {
-        // Handle mixed quoted and unquoted search terms
         const searchTerms = query.match(/"[^"]+"|[^"\s]+/g) || [];
         const processedTerms = searchTerms.map(term => 
             term.startsWith('"') ? term : `"${term}"`
@@ -124,9 +112,7 @@ async function searchAudiobooks(query, page = 1) {
             }
         });
 
-        // Check if there's a next page
         const hasNextPage = $('#pagination a:contains("»")').length > 0;
-
         return { results, hasNextPage };
     } catch (error) {
         console.error('Search error:', error.message);
@@ -144,24 +130,19 @@ async function getAudiobookDetails(url) {
         
         const $ = cheerio.load(response.data);
         const title = $('.postTitle h1').text().trim();
-        const postContent = $('.postContent').text();
-        
-        // Try to find magnet hash using various methods
         let magnetHash = '';
         
-        // First try the #magnetLink element
         const magnetElement = $('#magnetLink');
         if (magnetElement.length > 0) {
             magnetHash = magnetElement.text().trim();
         }
         
-        // If not found, look for hash pattern in any element
         if (!magnetHash) {
             $('*').each((_, el) => {
                 const text = $(el).text().trim();
                 if (text.match(/^[a-fA-F0-9]{40}$/)) {
                     magnetHash = text;
-                    return false; // Break the loop
+                    return false;
                 }
             });
         }
@@ -176,6 +157,35 @@ async function getAudiobookDetails(url) {
     }
 }
 
+async function displayOptions(results, hasNextPage, currentPage) {
+    const options = [
+        theme.option('0. Exit'), 
+        theme.option('1-N. Select audiobook')
+    ];
+    if (hasNextPage) options.push(theme.option('n. Next page'));
+    if (currentPage > 1) options.push(theme.option('p. Previous page'));
+    
+    console.log('\nOptions:', options.join(', '));
+    return await question(theme.prompt('\nEnter your choice: '));
+}
+
+async function handleBookSelection(results, selectedIndex) {
+    const selectedBook = results[selectedIndex];
+    console.log('\nFetching audiobook details...\n');
+
+    const bookDetails = await getAudiobookDetails(selectedBook.url);
+    if (!bookDetails || !bookDetails.magnetUrl) {
+        console.log('No magnet link available for this audiobook.');
+        return;
+    }
+
+    console.log(theme.info('\nMagnet Link for:'), theme.title(bookDetails.title));
+    console.log(theme.border('─'.repeat(50)));
+    console.log(theme.info(bookDetails.magnetUrl));
+    
+    console.log(theme.info('\nPlease select and copy the magnet link above manually.'));
+}
+
 async function main() {
     try {
         let currentPage = 1;
@@ -187,82 +197,51 @@ async function main() {
             const { results, hasNextPage } = await searchAudiobooks(query, currentPage);
 
             if (results.length === 0) {
-                console.log('No results found. Please try a different search term.');
+                console.log('No results found.');
+                const retry = await question(theme.prompt('\nWould you like to search again? (y/n): '));
+                if (retry.toLowerCase() === 'y') {
+                    return main();
+                }
                 break;
             }
 
             console.log(theme.info(`\nPage ${currentPage}`));
             displayResultsTable(results);
             
-            const options = [
-                theme.option('0. Exit'), 
-                theme.option('1-N. Select audiobook')
-            ];
-            if (hasNextPage) options.push(theme.option('n. Next page'));
-            if (currentPage > 1) options.push(theme.option('p. Previous page'));
-            
-            console.log('\nOptions:', options.join(', '));
-            const choice = await question(theme.prompt('\nEnter your choice: '));
+            let continueSession = true;
+            while (continueSession) {
+                const choice = await displayOptions(results, hasNextPage, currentPage);
 
-            if (choice.toLowerCase() === 'n' && hasNextPage) {
-                currentPage++;
-                continue;
-            } else if (choice.toLowerCase() === 'p' && currentPage > 1) {
-                currentPage--;
-                continue;
-            } else if (choice === '0') {
-                break;
-            }
-
-            const choiceNum = parseInt(choice);
-            if (isNaN(choiceNum) || choiceNum < 1 || choiceNum > results.length) {
-                console.log('Invalid choice. Please try again.');
-                continue;
-            }
-
-            const selectedBook = results[choiceNum - 1];
-            console.log('\nFetching audiobook details...\n');
-
-            const bookDetails = await getAudiobookDetails(selectedBook.url);
-            if (!bookDetails) {
-                console.log('Unable to fetch audiobook details. Please try again later.');
-                const retry = await question('\nWould you like to try another book? (y/n): ');
-                if (retry.toLowerCase() !== 'y') break;
-                continue;
-            }
-
-            if (bookDetails.magnetUrl) {
-                console.log(theme.info('\nMagnet Link for:'), theme.title(bookDetails.title));
-                console.log(theme.border('─'.repeat(50)));
-                console.log(theme.info(bookDetails.magnetUrl));
-                
-                // Copy to clipboard
-                try {
-                    ncp.copy(bookDetails.magnetUrl, function () {
-                        console.log(theme.success('\n✓ Magnet link copied to clipboard!'));
-                    });
-                } catch (err) {
-                    console.log(theme.error('\nNote: To copy the magnet link, please select and copy it manually.'));
-                }
-
-                if (hasNextPage) {
-                    console.log(theme.info('\nThere are more results available on the next page.'));
-                }
-
-                const nextAction = await question(theme.prompt('\nOptions: n (next page), s (search again), any other key to exit: '));
-                if (nextAction.toLowerCase() === 'n' && hasNextPage) {
+                if (choice.toLowerCase() === 'n' && hasNextPage) {
                     currentPage++;
+                    continueSession = false;  // Break inner loop to refresh results
                     continue;
-                } else if (nextAction.toLowerCase() === 's') {
-                    return main(); // Start a new search
-                } else {
+                } else if (choice.toLowerCase() === 'p' && currentPage > 1) {
+                    currentPage--;
+                    continueSession = false;  // Break inner loop to refresh results
+                    continue;
+                } else if (choice === '0') {
+                    keepSearching = false;
                     break;
                 }
-            } else {
-                console.log('\nNo magnet link available for this audiobook.');
-                const retry = await question('\nWould you like to try another book? (y/n): ');
-                if (retry.toLowerCase() !== 'y') break;
-                continue;
+
+                const choiceNum = parseInt(choice);
+                if (isNaN(choiceNum) || choiceNum < 1 || choiceNum > results.length) {
+                    console.log('Invalid choice. Please try again.');
+                    continue;
+                }
+
+                await handleBookSelection(results, choiceNum - 1);
+                
+                const continueChoice = await question(theme.prompt('\nWould you like to select another option? (y/n): '));
+                if (continueChoice.toLowerCase() !== 'y') {
+                    keepSearching = false;
+                    break;
+                }
+                
+                // Re-display the table and continue the loop
+                console.log('\n');
+                displayResultsTable(results);
             }
         }
     } catch (error) {
